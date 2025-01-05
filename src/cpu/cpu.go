@@ -268,13 +268,23 @@ func (c *CPU) turnTransistorOff(trans *Transistor, recalcList map[int]*Node) {
 }
 
 func (c *CPU) recalcNodeList(list map[int]*Node) {
+	// Reuse maps to avoid allocations
 	currentList := list
+	nextList := make(map[int]*Node, len(list)) // Pre-allocate with initial capacity
+
 	for len(currentList) > 0 {
-		nextList := make(map[int]*Node)
+		// Clear nextList without deallocating
+		for k := range nextList {
+			delete(nextList, k)
+		}
+
+		// Process current nodes
 		for _, node := range currentList {
 			c.recalcNode(node, nextList)
 		}
-		currentList = nextList
+
+		// Swap lists
+		currentList, nextList = nextList, currentList
 	}
 }
 
