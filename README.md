@@ -40,6 +40,33 @@ A Go implementation of a 6502 processor simulator, derived from the Visual6502 p
    ./main
    ```
 
+## Profiling
+
+The simulator includes CPU profiling capabilities to help analyze performance. To use the profiler:
+
+1. Run the simulator with profiling enabled:
+   ```bash
+   ./6502-netsim-go -cpuprofile=cpu.prof
+   ```
+
+2. Analyze the profile using Go's pprof tool:
+   ```bash
+   go tool pprof cpu.prof
+   ```
+
+   Common pprof commands:
+   - `top`: Shows the top CPU consumers
+   - `web`: Opens browser visualization (requires graphviz)
+   - `list <funcname>`: Shows source-level profiling data
+   - `peek <regexp>`: Shows functions matching regexp
+
+You can generate multiple profiles with different names for comparison:
+```bash
+./6502-netsim-go -cpuprofile=before.prof
+# Make changes
+./6502-netsim-go -cpuprofile=after.prof
+```
+
 ## Attribution
 
 This project is based on the work from [Visual6502](https://github.com/trebonian/visual6502) (www.visual6502.org), originally created by Greg James, Brian Silverman, and Barry Silverman. The original work was licensed under [Creative Commons Attribution-NonCommercial-ShareAlike 3.0](http://creativecommons.org/licenses/by-nc-sa/3.0/).

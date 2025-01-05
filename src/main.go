@@ -1,9 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"time"
 
 	"github.com/carledwards/6502-netsim-go/src/motherboard"
@@ -17,6 +20,21 @@ var appCode = []uint8{
 }
 
 func main() {
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
+	flag.Parse()
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal(err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
 	// Get paths relative to current directory
 	transDefsPath := filepath.Join("data", "transdefs.txt")
 	segDefsPath := filepath.Join("data", "segdefs.txt")
