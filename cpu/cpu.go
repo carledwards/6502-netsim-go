@@ -1,15 +1,30 @@
+// Package cpu is a transistor-level simulator of the MOS 6502, derived
+// from the Visual6502 project.
+//
+// The simulator drives a real bus through ReadFromBus / WriteToBus
+// callbacks supplied by the caller. Transistor and segment definitions
+// are embedded into the binary, so consumers don't need to ship the
+// data files.
 package cpu
 
 import (
 	"bufio"
-	"fmt"
-	"os"
+	"bytes"
+	_ "embed"
+	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 )
 
-// CPU represents the 6502 processor
+//go:embed data/transdefs.txt
+var transDefs []byte
+
+//go:embed data/segdefs.txt
+var segDefs []byte
+
+// CPU represents the 6502 processor.
 type CPU struct {
 	transistors     map[int]*Transistor
 	nodes           [NodeDefCount]*Node
@@ -22,8 +37,9 @@ type CPU struct {
 	dataBits        uint8
 }
 
-// New creates a new CPU instance
-func New(readFromBus ReadFromBus, writeToBus WriteToBus, transDefsPath, segDefsPath string) (*CPU, error) {
+// New creates a CPU wired to the supplied bus callbacks. Transistor
+// and segment definitions are loaded from the embedded data files.
+func New(readFromBus ReadFromBus, writeToBus WriteToBus) (*CPU, error) {
 	cpu := &CPU{
 		transistors:     make(map[int]*Transistor),
 		recalcNodeGroup: make([]*Node, 0),
@@ -31,27 +47,18 @@ func New(readFromBus ReadFromBus, writeToBus WriteToBus, transDefsPath, segDefsP
 		writeToBus:      writeToBus,
 	}
 
-	if err := cpu.setupTransistors(transDefsPath); err != nil {
+	if err := cpu.setupTransistors(bytes.NewReader(transDefs)); err != nil {
 		return nil, err
 	}
-
-	if err := cpu.setupNodes(segDefsPath); err != nil {
+	if err := cpu.setupNodes(bytes.NewReader(segDefs)); err != nil {
 		return nil, err
 	}
-
 	cpu.connectTransistors()
 	return cpu, nil
 }
 
-func (c *CPU) setupTransistors(path string) error {
-	fmt.Printf("Opening transistor definitions from: %s\n", path)
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("failed to open transistor definitions file: %w", err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
+func (c *CPU) setupTransistors(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -86,20 +93,11 @@ func (c *CPU) setupTransistors(path string) error {
 		}
 		c.transistors[trans.ID] = trans
 	}
-
-	fmt.Printf("Loaded %d transistors\n", len(c.transistors))
 	return scanner.Err()
 }
 
-func (c *CPU) setupNodes(path string) error {
-	fmt.Printf("Opening segment definitions from: %s\n", path)
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("failed to open segment definitions file: %w", err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
+func (c *CPU) setupNodes(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -126,21 +124,21 @@ func (c *CPU) setupNodes(path string) error {
 			}
 		}
 	}
-
-	nodeCount := 0
-	for i := 0; i < NodeDefCount; i++ {
-		if c.nodes[i] != nil {
-			nodeCount++
-		}
-	}
-	fmt.Printf("Loaded %d nodes\n", nodeCount)
 	return scanner.Err()
 }
 
 func (c *CPU) connectTransistors() {
-	fmt.Printf("Connecting transistors to nodes...\n")
-	for _, trans := range c.transistors {
-		// Create nodes if they don't exist
+	// Iterate transistors in stable ID order so that GateTransistors
+	// and C1C2Transistors slices are built consistently across runs.
+	// Map iteration is randomized in Go, and any order-dependence
+	// downstream (transistor toggle propagation) would be flaky.
+	ids := make([]int, 0, len(c.transistors))
+	for id := range c.transistors {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		trans := c.transistors[id]
 		if c.nodes[trans.GateNodeID] == nil {
 			c.nodes[trans.GateNodeID] = &Node{
 				ID:              trans.GateNodeID,
@@ -165,8 +163,6 @@ func (c *CPU) connectTransistors() {
 				PullDown:        -1,
 			}
 		}
-
-		// Connect transistors to nodes
 		c.nodes[trans.GateNodeID].GateTransistors = append(c.nodes[trans.GateNodeID].GateTransistors, trans)
 		c.nodes[trans.C1NodeID].C1C2Transistors = append(c.nodes[trans.C1NodeID].C1C2Transistors, trans)
 		c.nodes[trans.C2NodeID].C1C2Transistors = append(c.nodes[trans.C2NodeID].C1C2Transistors, trans)
@@ -268,22 +264,24 @@ func (c *CPU) turnTransistorOff(trans *Transistor, recalcList map[int]*Node) {
 }
 
 func (c *CPU) recalcNodeList(list map[int]*Node) {
-	// Reuse maps to avoid allocations
 	currentList := list
-	nextList := make(map[int]*Node, len(list)) // Pre-allocate with initial capacity
+	nextList := make(map[int]*Node, len(list))
+	keys := make([]int, 0, NodeDefCount)
 
 	for len(currentList) > 0 {
-		// Clear nextList without deallocating
 		for k := range nextList {
 			delete(nextList, k)
 		}
-
-		// Process current nodes
-		for _, node := range currentList {
-			c.recalcNode(node, nextList)
+		// Iterate currentList in stable ID order — transistor recalc
+		// is order-sensitive and Go map iteration is randomized.
+		keys = keys[:0]
+		for k := range currentList {
+			keys = append(keys, k)
 		}
-
-		// Swap lists
+		sort.Ints(keys)
+		for _, k := range keys {
+			c.recalcNode(currentList[k], nextList)
+		}
 		currentList, nextList = nextList, currentList
 	}
 }
@@ -302,10 +300,8 @@ func (c *CPU) setHigh(node *Node) {
 	c.recalcNodeList(list)
 }
 
-// Reset resets the CPU to its initial state
+// Reset performs the standard 6502 power-on reset sequence.
 func (c *CPU) Reset() {
-	fmt.Println("Starting CPU reset...")
-	// Reset all nodes
 	for i := 0; i < NodeDefCount; i++ {
 		if c.nodes[i] != nil {
 			c.nodes[i].State = false
@@ -314,26 +310,16 @@ func (c *CPU) Reset() {
 	}
 
 	c.gndNode = c.nodes[NodeGND]
-	if c.gndNode == nil {
-		fmt.Printf("Warning: GND node (ID: %d) not found\n", NodeGND)
-	}
 	c.gndNode.State = false
 
 	c.pwrNode = c.nodes[NodePWR]
-	if c.pwrNode == nil {
-		fmt.Printf("Warning: PWR node (ID: %d) not found\n", NodePWR)
-	}
 	c.pwrNode.State = true
 
-	// Reset all transistors
 	for _, trans := range c.transistors {
 		trans.On = false
 	}
 
 	clk0 := c.nodes[NodeCLK0]
-	if clk0 == nil {
-		fmt.Printf("Warning: CLK0 node (ID: %d) not found\n", NodeCLK0)
-	}
 	c.setLow(c.nodes[NodeRES])
 	c.setLow(clk0)
 	c.setHigh(c.nodes[NodeRDY])
@@ -341,7 +327,6 @@ func (c *CPU) Reset() {
 	c.setHigh(c.nodes[NodeIRQ])
 	c.setHigh(c.nodes[NodeNMI])
 
-	// Initial recalc of all nodes
 	allNodes := make(map[int]*Node)
 	for i := 0; i < NodeDefCount; i++ {
 		if c.nodes[i] != nil {
@@ -350,7 +335,6 @@ func (c *CPU) Reset() {
 	}
 	c.recalcNodeList(allNodes)
 
-	// Initial clock cycles
 	for i := 0; i < 8; i++ {
 		c.setHigh(clk0)
 		c.setLow(clk0)
@@ -389,9 +373,8 @@ func (c *CPU) readDataBus() uint8 {
 func (c *CPU) handleBusRead() {
 	if c.nodes[NodeRW].State {
 		address := c.readAddressBus()
-		data := c.readFromBus(int(address))
+		data := c.readFromBus(address)
 
-		// Update data bus nodes
 		list := make(map[int]*Node)
 		for bit, nodeID := range DataLineVals {
 			node := c.nodes[nodeID]
@@ -412,11 +395,11 @@ func (c *CPU) handleBusWrite() {
 	if !c.nodes[NodeRW].State {
 		address := c.readAddressBus()
 		data := c.readDataBus()
-		c.writeToBus(int(address), data)
+		c.writeToBus(address, data)
 	}
 }
 
-// HalfStep performs half a clock cycle
+// HalfStep advances the simulation by half a clock cycle.
 func (c *CPU) HalfStep() {
 	clk0 := c.nodes[NodeCLK0]
 	if clk0.State {

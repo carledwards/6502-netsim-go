@@ -1,83 +1,105 @@
 # 6502-netsim-go
 
-A Go implementation of a 6502 processor simulator, derived from the Visual6502 project. This simulator provides a detailed emulation of the MOS Technology 6502 processor, including transistor-level simulation capabilities.
+A Go transistor-level simulator of the MOS Technology 6502, derived
+from the [Visual6502](https://github.com/trebonian/visual6502) project.
+Drop it in your own circuit by supplying read / write callbacks for
+the data bus.
 
-## Project Structure
+## Project structure
 
 ```
 .
-├── src/          # Source code directory
-│   ├── cpu/      # CPU implementation
-│   ├── memory/   # Memory management
-│   └── motherboard/ # Motherboard simulation
-├── data/         # Simulation data files
-│   ├── segdefs.txt    # Segment definitions from Visual6502
-│   └── transdefs.txt  # Transistor definitions from Visual6502
+├── cpu/
+│   ├── cpu.go            # transistor sim core
+│   ├── types.go          # node/transistor types, bus signal IDs
+│   ├── cpu_test.go       # smoke test
+│   └── data/             # transistor & segment definitions (embedded)
+│       ├── segdefs.txt
+│       └── transdefs.txt
+└── cmd/
+    └── benchmark/
+        └── main.go       # tiny perf harness, supports -cpuprofile
 ```
 
-## Building and Running
+The data files are embedded into the binary via `go:embed`, so
+consumers don't need to ship them separately.
+
+## Usage
+
+```go
+import "github.com/carledwards/6502-netsim-go/cpu"
+
+read := func(addr uint16) uint8 {
+    // return memory contents at addr
+}
+write := func(addr uint16, val uint8) {
+    // store val at addr
+}
+
+c, err := cpu.New(read, write)
+if err != nil { ... }
+c.Reset()
+
+for {
+    c.HalfStep() // advance half a clock cycle
+}
+```
+
+`HalfStep` is the lowest-granularity API. The bus callbacks are
+invoked during the read and write phases of each cycle.
+
+## Building and running
 
 ### Prerequisites
 
-- Go 1.21 or later
-- Git
+- Go 1.21+
 
-### Getting Started
+### Build the benchmark
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/carledwards/6502-netsim-go.git
-   cd 6502-netsim-go
-   ```
+```bash
+go build -o bin/benchmark ./cmd/benchmark
+./bin/benchmark -ticks 10000
+```
 
-2. Build the project:
-   ```bash
-   go build ./src
-   ```
+Output:
 
-3. Run the simulator:
-   ```bash
-   ./main
-   ```
+```
+ticks=10000 elapsed=684ms (14620 ticks/s)
+```
+
+### Test
+
+```bash
+go test ./...
+```
 
 ## Profiling
 
-The simulator includes CPU profiling capabilities to help analyze performance. To use the profiler:
+The benchmark accepts `-cpuprofile`:
 
-1. Run the simulator with profiling enabled:
-   ```bash
-   ./6502-netsim-go -cpuprofile=cpu.prof
-   ```
-
-2. Analyze the profile using Go's pprof tool:
-   ```bash
-   go tool pprof cpu.prof
-   ```
-
-   Common pprof commands:
-   - `top`: Shows the top CPU consumers
-   - `web`: Opens browser visualization (requires graphviz)
-   - `list <funcname>`: Shows source-level profiling data
-   - `peek <regexp>`: Shows functions matching regexp
-
-You can generate multiple profiles with different names for comparison:
 ```bash
-./6502-netsim-go -cpuprofile=before.prof
-# Make changes
-./6502-netsim-go -cpuprofile=after.prof
+go build -o bin/benchmark ./cmd/benchmark
+./bin/benchmark -cpuprofile=cpu.prof -ticks 50000
+go tool pprof cpu.prof
 ```
+
+Common pprof commands:
+
+- `top` — top CPU consumers
+- `web` — browser visualization (requires graphviz)
+- `list <funcname>` — source-level profiling
+- `peek <regexp>` — match by regexp
 
 ## Attribution
 
-This project is based on the work from [Visual6502](https://github.com/trebonian/visual6502) (www.visual6502.org), originally created by Greg James, Brian Silverman, and Barry Silverman. The original work was licensed under [Creative Commons Attribution-NonCommercial-ShareAlike 3.0](http://creativecommons.org/licenses/by-nc-sa/3.0/).
+Based on [Visual6502](https://github.com/trebonian/visual6502)
+([www.visual6502.org](http://www.visual6502.org)) by Greg James, Brian
+Silverman, and Barry Silverman. Original work is licensed under
+[CC BY-NC-SA 3.0](http://creativecommons.org/licenses/by-nc-sa/3.0/).
 
-The segment and transistor definition files used in this project are derived from the Visual6502 project and are essential components for the transistor-level simulation of the 6502 processor. These files contain the detailed mapping of the processor's internal structure and connections.
-
-## Data Files
-
-- `data/segdefs.txt`: Contains segment definitions that describe the various components and pathways within the 6502 processor
-- `data/transdefs.txt`: Contains transistor definitions that specify the switching elements and their connections within the processor
+The transistor and segment definition files in `cpu/data/` come from
+that project and describe the internal structure of the 6502 die.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
