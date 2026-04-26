@@ -18,6 +18,11 @@ import (
 	"unicode"
 )
 
+// connectTransistors still uses sort.Ints for deterministic build
+// of GateTransistors/C1C2Transistors lists. recalcNodeList no longer
+// needs sort — slice insertion order is the natural deterministic
+// order now.
+
 //go:embed data/transdefs.txt
 var transDefs []byte
 
@@ -31,10 +36,15 @@ type CPU struct {
 	gndNode         *Node
 	pwrNode         *Node
 	recalcNodeGroup []*Node
-	readFromBus     ReadFromBus
-	writeToBus      WriteToBus
-	addressBits     uint16
-	dataBits        uint8
+	// recalcCurr / recalcNext are reused across recalc rounds so the
+	// hot path makes zero allocations. Membership is tracked by the
+	// per-Node InRecalcList flag for O(1) dedup.
+	recalcCurr  []*Node
+	recalcNext  []*Node
+	readFromBus ReadFromBus
+	writeToBus  WriteToBus
+	addressBits uint16
+	dataBits    uint8
 }
 
 // New creates a CPU wired to the supplied bus callbacks. Transistor
@@ -215,7 +225,7 @@ func (c *CPU) addSubNodesToGroup(node *Node) {
 	}
 }
 
-func (c *CPU) recalcNode(node *Node, recalcList map[int]*Node) {
+func (c *CPU) recalcNode(node *Node, recalc *[]*Node) {
 	if node.ID == NodeGND || node.ID == NodePWR {
 		return
 	}
@@ -232,72 +242,85 @@ func (c *CPU) recalcNode(node *Node, recalcList map[int]*Node) {
 		n.State = newState
 		for _, trans := range n.GateTransistors {
 			if newState {
-				c.turnTransistorOn(trans, recalcList)
+				c.turnTransistorOn(trans, recalc)
 			} else {
-				c.turnTransistorOff(trans, recalcList)
+				c.turnTransistorOff(trans, recalc)
 			}
 		}
 	}
 }
 
-func (c *CPU) turnTransistorOn(trans *Transistor, recalcList map[int]*Node) {
+func (c *CPU) turnTransistorOn(trans *Transistor, recalc *[]*Node) {
 	if trans.On {
 		return
 	}
 	trans.On = true
 	if trans.C1NodeID != NodeGND && trans.C1NodeID != NodePWR {
-		recalcList[trans.C1NodeID] = c.nodes[trans.C1NodeID]
+		n := c.nodes[trans.C1NodeID]
+		if !n.InRecalcList {
+			n.InRecalcList = true
+			*recalc = append(*recalc, n)
+		}
 	}
 }
 
-func (c *CPU) turnTransistorOff(trans *Transistor, recalcList map[int]*Node) {
+func (c *CPU) turnTransistorOff(trans *Transistor, recalc *[]*Node) {
 	if !trans.On {
 		return
 	}
 	trans.On = false
 	if trans.C1NodeID != NodeGND && trans.C1NodeID != NodePWR {
-		recalcList[trans.C1NodeID] = c.nodes[trans.C1NodeID]
+		n := c.nodes[trans.C1NodeID]
+		if !n.InRecalcList {
+			n.InRecalcList = true
+			*recalc = append(*recalc, n)
+		}
 	}
 	if trans.C2NodeID != NodeGND && trans.C2NodeID != NodePWR {
-		recalcList[trans.C2NodeID] = c.nodes[trans.C2NodeID]
+		n := c.nodes[trans.C2NodeID]
+		if !n.InRecalcList {
+			n.InRecalcList = true
+			*recalc = append(*recalc, n)
+		}
 	}
 }
 
-func (c *CPU) recalcNodeList(list map[int]*Node) {
-	currentList := list
-	nextList := make(map[int]*Node, len(list))
-	keys := make([]int, 0, NodeDefCount)
+func (c *CPU) recalcNodeList(initial []*Node) {
+	// Move the caller's seed into our reused current slice, deduping
+	// via the per-Node flag.
+	c.recalcCurr = c.recalcCurr[:0]
+	for _, n := range initial {
+		if !n.InRecalcList {
+			n.InRecalcList = true
+			c.recalcCurr = append(c.recalcCurr, n)
+		}
+	}
 
-	for len(currentList) > 0 {
-		for k := range nextList {
-			delete(nextList, k)
+	for len(c.recalcCurr) > 0 {
+		c.recalcNext = c.recalcNext[:0]
+		// Each node gets its flag cleared before recalcNode runs, so
+		// it can be re-added to the next round if a transistor toggle
+		// inside recalcNode would push it back in.
+		for _, node := range c.recalcCurr {
+			node.InRecalcList = false
+			c.recalcNode(node, &c.recalcNext)
 		}
-		// Iterate currentList in stable ID order — transistor recalc
-		// is order-sensitive and Go map iteration is randomized.
-		keys = keys[:0]
-		for k := range currentList {
-			keys = append(keys, k)
-		}
-		sort.Ints(keys)
-		for _, k := range keys {
-			c.recalcNode(currentList[k], nextList)
-		}
-		currentList, nextList = nextList, currentList
+		c.recalcCurr, c.recalcNext = c.recalcNext, c.recalcCurr
 	}
 }
 
 func (c *CPU) setLow(node *Node) {
 	node.PullUp = false
 	node.PullDown = 1
-	list := map[int]*Node{node.ID: node}
-	c.recalcNodeList(list)
+	arr := [1]*Node{node}
+	c.recalcNodeList(arr[:])
 }
 
 func (c *CPU) setHigh(node *Node) {
 	node.PullUp = true
 	node.PullDown = 0
-	list := map[int]*Node{node.ID: node}
-	c.recalcNodeList(list)
+	arr := [1]*Node{node}
+	c.recalcNodeList(arr[:])
 }
 
 // Reset performs the standard 6502 power-on reset sequence.
@@ -327,10 +350,10 @@ func (c *CPU) Reset() {
 	c.setHigh(c.nodes[NodeIRQ])
 	c.setHigh(c.nodes[NodeNMI])
 
-	allNodes := make(map[int]*Node)
+	allNodes := make([]*Node, 0, NodeDefCount)
 	for i := 0; i < NodeDefCount; i++ {
 		if c.nodes[i] != nil {
-			allNodes[i] = c.nodes[i]
+			allNodes = append(allNodes, c.nodes[i])
 		}
 	}
 	c.recalcNodeList(allNodes)
@@ -375,10 +398,10 @@ func (c *CPU) handleBusRead() {
 		address := c.readAddressBus()
 		data := c.readFromBus(address)
 
-		list := make(map[int]*Node)
+		var list [8]*Node
 		for bit, nodeID := range DataLineVals {
 			node := c.nodes[nodeID]
-			list[nodeID] = node
+			list[bit] = node
 			if data&(1<<bit) != 0 {
 				node.PullDown = 0
 				node.PullUp = true
@@ -387,7 +410,7 @@ func (c *CPU) handleBusRead() {
 				node.PullUp = false
 			}
 		}
-		c.recalcNodeList(list)
+		c.recalcNodeList(list[:])
 	}
 }
 

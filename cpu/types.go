@@ -42,6 +42,11 @@ type Node struct {
 	GateTransistors []*Transistor
 	C1C2Transistors []*Transistor
 	InNodeGroup     bool
+	// InRecalcList tracks membership in the current or next recalc
+	// slice — the per-node flag replaces the old map-as-set approach
+	// so we get O(1) dedup with no allocations and deterministic
+	// (insertion-order) iteration without sorting each round.
+	InRecalcList bool
 }
 
 // DataLine represents data lines D0-D7
