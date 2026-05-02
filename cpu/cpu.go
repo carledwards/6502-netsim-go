@@ -422,6 +422,47 @@ func (c *CPU) handleBusWrite() {
 	}
 }
 
+// AddressBus reads the 16 address-line nodes and returns the live
+// value on the address bus. Pure read — no side effects on cache.
+func (c *CPU) AddressBus() uint16 {
+	var address uint16
+	for bit, nodeID := range AddressLineVals {
+		if c.nodes[nodeID].State {
+			address |= 1 << bit
+		}
+	}
+	return address
+}
+
+// DataBus reads the 8 data-line nodes.
+func (c *CPU) DataBus() uint8 {
+	var data uint8
+	for bit, nodeID := range DataLineVals {
+		if c.nodes[nodeID].State {
+			data |= 1 << bit
+		}
+	}
+	return data
+}
+
+// IsReadCycle reports R/W pin state — true means the CPU is reading.
+func (c *CPU) IsReadCycle() bool {
+	n := c.nodes[NodeRW]
+	return n != nil && n.State
+}
+
+// IRQ reports the IRQ pin state. Active low — true means inactive.
+func (c *CPU) IRQ() bool {
+	n := c.nodes[NodeIRQ]
+	return n == nil || n.State
+}
+
+// NMI reports the NMI pin state. Active low — true means inactive.
+func (c *CPU) NMI() bool {
+	n := c.nodes[NodeNMI]
+	return n == nil || n.State
+}
+
 // HalfStep advances the simulation by half a clock cycle.
 func (c *CPU) HalfStep() {
 	clk0 := c.nodes[NodeCLK0]
