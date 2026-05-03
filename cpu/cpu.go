@@ -463,6 +463,15 @@ func (c *CPU) NMI() bool {
 	return n == nil || n.State
 }
 
+// SYNC reports the SYNC pin state. Active high — true means the CPU
+// is currently fetching an opcode (T1 cycle). External observers
+// can use this to detect instruction boundaries without decoding
+// the opcode stream themselves.
+func (c *CPU) SYNC() bool {
+	n := c.nodes[NodeSYNC]
+	return n != nil && n.State
+}
+
 // HalfStep advances the simulation by half a clock cycle.
 func (c *CPU) HalfStep() {
 	clk0 := c.nodes[NodeCLK0]

@@ -11,6 +11,10 @@ const (
 	NodeIRQ  = 103  // interrupt
 	NodeRES  = 159  // reset
 	NodeRW   = 1156 // read/write
+	NodeSYNC = 539  // sync — high during opcode fetch (T1 cycle).
+	// Used by external observers (logic analyzers, debuggers) to
+	// detect instruction boundaries without decoding the opcode
+	// stream themselves.
 
 	NodeDefCount = 1725
 )
