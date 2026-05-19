@@ -463,6 +463,24 @@ func (c *CPU) NMI() bool {
 	return n == nil || n.State
 }
 
+// SetIRQ drives the IRQ pin. The 6502 IRQ line is active-low: an
+// asserted interrupt request pulls the node low; deasserting releases
+// it high. Uses the same setLow/setHigh netlist path Reset uses for
+// the interrupt pins, so the change propagates immediately and a
+// subsequent HalfStep observes it. Lets a host wire a peripheral's
+// IRQ output to the CPU (e.g. a 6522 VIA via go6sim's backplane).
+func (c *CPU) SetIRQ(asserted bool) {
+	n := c.nodes[NodeIRQ]
+	if n == nil {
+		return
+	}
+	if asserted {
+		c.setLow(n)
+	} else {
+		c.setHigh(n)
+	}
+}
+
 // SYNC reports the SYNC pin state. Active high — true means the CPU
 // is currently fetching an opcode (T1 cycle). External observers
 // can use this to detect instruction boundaries without decoding
